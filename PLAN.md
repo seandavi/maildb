@@ -148,39 +148,60 @@ disruptive to discover with two live mailboxes already synced.
 
 ---
 
-## M3 — Gmail
+## M3 — Gmail 🟡
+
+**Status: code complete, unverified against a live account.** Everything
+that can be tested without credentials is built and tested — normalization,
+paging, batching, history reduction, the expiry fallback, the rate limiter,
+and the whole sync engine (against a fake provider). What remains is
+running it against a real mailbox, which needs the two OAuth answers in
+*Open questions*.
 
 **Goal:** a real mailbox, fully synced, queryable.
 
-- [ ] `GmailAuth` seam: installed-app flow *and* service-account DWD
+- [x] `GmailAuth` seam: installed-app flow *and* service-account DWD
       (see spec §7.1 — DWD cannot reach personal `@gmail.com` accounts)
-- [ ] Refresh token in Keychain via `keyring`; config holds a reference,
+- [x] Refresh token in Keychain via `keyring`; config holds a reference,
       never a secret; loader refuses to start on a secret-shaped value
-- [ ] Label discovery → `mailboxes` (including counts, colors, types)
-- [ ] Backfill: paginated `messages.list` + batched `messages.get`
-- [ ] Normalization: headers → `message_headers`, extracted bulk-mail
+- [x] Label discovery → `mailboxes` (including counts, colors, types)
+- [x] Backfill: paginated `messages.list` + batched `messages.get`
+- [x] Normalization: headers → `message_headers`, extracted bulk-mail
       columns, `internalDate` as authoritative, HTML → `body_text`
-- [ ] Incremental: `history.list` from `historyId`, with `404` →
+- [x] Incremental: `history.list` from `historyId`, with `404` →
       reconciliation fallback
-- [ ] Reconciliation sweep (IDs + flags only)
-- [ ] Attachment metadata; `attachments` rows, no bytes
-- [ ] `tenacity` backoff + `aiolimiter` token bucket from the first
+- [x] Reconciliation sweep (IDs + flags only)
+- [x] Attachment metadata; `attachments` rows, no bytes
+- [x] `tenacity` backoff + `aiolimiter` token bucket from the first
       commit, not after the first rate-limit ban
 
-**Exit criteria**
+**Exit criteria** — the first five need a live account and are still open
 
-- Full backfill of a real account completes without manual intervention
-- Re-running sync is a no-op: zero inserts, zero updates (idempotency)
-- Kill `-9` mid-sync, restart → no duplicates, no lost messages, no
-  corrupt FTS
-- Deleting a message in the Gmail UI sets `deleted_at` on next sync
-- Backfill respects quota under sustained load (assert on the limiter,
-  not on wall clock)
-- `WHERE list_id IS NOT NULL` cleanly separates bulk from human mail —
-  the query this database exists to make trivial
+- [ ] Full backfill of a real account completes without manual intervention
+- [ ] Deleting a message in the Gmail UI sets `deleted_at` on next sync
+- [x] Re-running sync is a no-op: zero inserts (verified against a fake
+      provider, which is where idempotency actually lives)
+- [x] An interrupted sync leaves the index, the FTS index, and the cursor
+      untouched, so the retry resumes rather than double-writes
+- [x] Backfill respects quota under sustained load — asserted on the
+      limiter, not on wall clock
+- [x] `WHERE list_id IS NOT NULL` cleanly separates bulk from human mail
 
-**Risk:** medium. Quota behavior and `historyId` expiry are the parts
-that will surprise us.
+**Risk:** medium, and quota was indeed where the surprises were — see
+below.
+
+**Notes from the build.** Two real bugs in the rate limiter, both found
+by writing the tests rather than by reading the code:
+
+* **A request larger than the bucket never completes.** One HTTP batch of
+  100 `messages.get` costs 500 quota units against a 250-unit bucket, and
+  the bucket caps at its own rate — so the request could never be
+  satisfied in a single grant. It hung. Large requests are now drained in
+  bucket-sized instalments. This would have deadlocked the very first
+  real backfill.
+* **Floating-point starvation.** Refilling for exactly the deficit can
+  land a hair short (`0.1 * 100 == 9.999...`), leaving a 1e-15 deficit
+  that requests a 1e-17 second sleep and makes no progress — a spin loop
+  burning CPU at full tilt. Every wait now has a floor.
 
 ---
 
