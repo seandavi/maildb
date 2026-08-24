@@ -119,8 +119,15 @@ class AccountConfig(BaseModel):
 
     auth_method: AuthMethod = AuthMethod.NONE
 
-    #: Reference to the OAuth client (id + secret) in the shared backend.
-    oauth_client_ref: str | None = None
+    #: References to the OAuth client in the shared secret backend. Stored
+    #: as two secrets rather than one client-config JSON, which is how
+    #: they already exist in cdsci-infra.
+    oauth_client_id_ref: str | None = None
+    oauth_client_secret_ref: str | None = None
+    #: Fixed loopback port. Only needed for a *Web application* OAuth
+    #: client, which must have its exact redirect URI registered. A
+    #: Desktop client may use any ephemeral port, so 0 is correct there.
+    oauth_redirect_port: int = 0
     #: Reference to this account's refresh token in the token backend.
     credential_ref: str | None = None
     #: Path to a service-account key file. Path only, never the key.
@@ -131,7 +138,8 @@ class AccountConfig(BaseModel):
     @model_validator(mode="after")
     def _check(self) -> AccountConfig:
         for field in (
-            "oauth_client_ref",
+            "oauth_client_id_ref",
+            "oauth_client_secret_ref",
             "credential_ref",
             "delegated_subject",
         ):

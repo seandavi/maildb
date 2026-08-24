@@ -459,14 +459,16 @@ class GmailAuth:
         account_id: str,
         *,
         scopes: list[str] | None = None,
-        client_secret_json: str | None = None,
+        client_id: str | None = None,
+        client_secret: str | None = None,
         service_account_file: str | None = None,
         delegated_subject: str | None = None,
         redirect_port: int = 0,
     ) -> None:
         self.account_id = account_id
         self.scopes = scopes or SCOPES_READONLY
-        self.client_secret_json = client_secret_json
+        self.client_id = client_id
+        self.client_secret = client_secret
         self.service_account_file = service_account_file
         self.delegated_subject = delegated_subject
         # Port 0 asks the OS for an ephemeral port, which a *Desktop app*
@@ -504,15 +506,41 @@ class GmailAuth:
                 creds.refresh(Request())
                 return creds
 
-        if not self.client_secret_json:
+        if not (self.client_id and self.client_secret):
             raise ProviderError(
-                "no OAuth client configured; expected the client secret in "
-                "Secret Manager (see decisions/0012)"
+                "no OAuth client configured; expected the client id and "
+                "secret in Secret Manager (see decisions/0012)"
             )
-        flow = InstalledAppFlow.from_client_config(
-            json.loads(self.client_secret_json), self.scopes
+        flow = InstalledAppFlow.from_client_config(self.client_config(), self.scopes)
+        return flow.run_local_server(
+            port=self.redirect_port,
+            prompt="consent",
+            # Without offline access Google returns no refresh token, and
+            # the grant dies with the process.
+            access_type="offline",
         )
-        return flow.run_local_server(port=self.redirect_port)
+
+    def client_config(self) -> dict[str, Any]:
+        """Assemble the client-config structure the flow expects.
+
+        Google normally hands this out as a downloaded JSON file. The two
+        halves are stored separately here, so it is rebuilt rather than
+        read.
+        """
+        return {
+            "installed": {
+                "client_id": self.client_id,
+                "client_secret": self.client_secret,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "redirect_uris": ["http://localhost"],
+            }
+        }
+
+    @staticmethod
+    def to_stored_token(credentials: Any) -> str:
+        """Serialize credentials for the keychain."""
+        return str(credentials.to_json())
 
 
 class GmailProvider:
