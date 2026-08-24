@@ -33,6 +33,7 @@ mcp = ["mcp>=1.0"]
 
 [project.scripts]
 maildb = "maildb.cli:app"
+maildb-mcp = "maildb.mcp.server:main"
 
 [dependency-groups]
 dev = [
