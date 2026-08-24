@@ -364,9 +364,50 @@ delegated_subject = "..."            # impersonation target
 enabled           = true
 ```
 
-Refresh tokens live in the **macOS Keychain**, not on disk. The config
-holds a reference (`credential_ref`), never a secret. Service-account
-key files are referenced by path and must be mode `0600`.
+## 7.1.1 Where the credentials live
+
+An existing GCP project, **`cdsci-infra`**, holds secrets in Google
+Secret Manager and carries a configured OAuth consent screen. Secrets are
+split by lifecycle (decisions/0012):
+
+| Secret | Store | Why |
+| --- | --- | --- |
+| OAuth client id + secret | Secret Manager (`cdsci-infra`) | Shared configuration, identical on every host, rotated centrally |
+| Per-account refresh token | macOS Keychain | Minted per device, useless elsewhere, read on every refresh — must not depend on a GCP round-trip |
+| Service-account key file | Disk, mode `0600` | Referenced by path; the key is never in config |
+
+```toml
+[secrets]
+backend       = "gsm"
+gcp_project   = "cdsci-infra"
+token_backend = "keyring"
+```
+
+Reading from Secret Manager needs application-default credentials
+(`gcloud auth application-default login`). This is a **different Google
+identity** from the Gmail OAuth grant; conflating the two is the likely
+first support question.
+
+The config file holds references only. The loader matches values against
+known credential shapes and refuses to start when one appears, so a
+pasted token fails at load rather than at `git push`.
+
+## 7.1.2 Redirect URI
+
+The client is a **Desktop app** OAuth client, which Google permits to use
+any loopback port. `InstalledAppFlow.run_local_server(port=0)` therefore
+needs no per-port registration: it binds an ephemeral port, receives the
+callback, and exits.
+
+If the client is instead registered as a **Web application**, loopback is
+not implicit — the exact redirect URI must be registered, and the flow
+must pin a fixed port (`server.oauth_redirect_port`, default `8788`).
+Check the client type before assuming the ephemeral-port path works.
+
+One consent-screen property to confirm before M3: an app in **Testing**
+mode issues refresh tokens that expire after **7 days**. Publishing the
+app — unverified and single-user is fine — is what avoids weekly
+re-authentication.
 
 ## 7.2 Scopes — least privilege, escalated by phase
 

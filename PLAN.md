@@ -10,7 +10,7 @@ sequence → `decisions/` for why the spec says what it says.
 
 ## What changed from spec v0.1
 
-Eleven decisions were made during planning. Each has an ADR.
+Twelve decisions were made during planning. Each has an ADR.
 
 | # | Change | ADR |
 | --- | --- | --- |
@@ -25,6 +25,7 @@ Eleven decisions were made during planning. Each has an ADR.
 | 9 | Python client supports HTTP *and* in-process reads | [0009](decisions/0009-client-supports-two-transports.md) |
 | 10 | Gmail is the reference provider; schema is a Gmail-fidelity superset | [0010](decisions/0010-gmail-is-the-reference-provider.md) |
 | 11 | Prefer maintained libraries over hand-rolled clients | [0011](decisions/0011-prefer-third-party-clients.md) |
+| 12 | Shared secrets in Secret Manager (`cdsci-infra`), refresh tokens in the Keychain | [0012](decisions/0012-secrets-live-in-two-places.md) |
 
 ---
 
@@ -60,23 +61,25 @@ M7  Daemon          scheduler, LaunchAgent, health
 
 ---
 
-## M1 — Database
+## M1 — Database ✅
+
+**Status: complete.** 148 tests, ruff and mypy-strict clean.
 
 **Goal:** a migrated, empty database that an agent could already read a
 schema description from.
 
-- [ ] `uv init`, src layout, `pyproject.toml`, ruff + mypy strict, pytest
-- [ ] Pydantic domain models (`Account`, `Mailbox`, `Thread`, `Message`,
+- [x] `uv init`, src layout, `pyproject.toml`, ruff + mypy strict, pytest
+- [x] Pydantic domain models (`Account`, `Mailbox`, `Thread`, `Message`,
       `Attachment`, `Draft`, `Capability`) and `enums.py` / `errors.py`
-- [ ] Connection management: WAL, foreign keys on, busy timeout,
+- [x] Connection management: WAL, foreign keys on, busy timeout,
       separate read-only and read-write connection factories
-- [ ] `yoyo-migrations` wired; migration `0001` = full canonical schema
-- [ ] FTS5 external-content table + the three triggers
-- [ ] `provider_capabilities` seeded for `gmail` and `apple_mail`
-- [ ] Schema metadata as YAML, with every non-universal column naming
+- [x] `yoyo-migrations` wired; migration `0001` = full canonical schema
+- [x] FTS5 external-content table + the three triggers
+- [x] `provider_capabilities` seeded for `gmail` and `apple_mail`
+- [x] Schema metadata as YAML, with every non-universal column naming
       its governing capability
-- [ ] ULID generation; `email://`, `thread://`, `attachment://` URIs
-- [ ] Fixture generator producing a realistic multi-account corpus
+- [x] ULID generation; `email://`, `thread://`, `attachment://` URIs
+- [x] Fixture generator producing a realistic multi-account corpus
       (threads, labels, attachments, bulk mail) — every later milestone
       tests against this
 
@@ -91,23 +94,39 @@ schema description from.
 
 **Risk:** low. This is the part that is fully understood.
 
+**Notes from the build.** Two things the design did not anticipate:
+
+* FTS5 reads `PRAGMA data_version` internally on every MATCH, so a
+  blanket pragma denial makes full-text search impossible. Exactly one
+  pragma is allowed, read-only.
+* SQLite fires `SQLITE_READ` for CTE and subquery *aliases* too, using
+  the alias as the table name — so "deny unless allowlisted" rejects
+  every query containing a CTE. The authorizer now distinguishes names
+  that are real tables on disk from names that are not; a CTE shadowing a
+  real table name is still denied, which fails closed.
+
 ---
 
-## M2 — Query service
+## M2 — Query service ✅
+
+**Status: complete.** The security suite runs with the parser disabled
+and passes; every rejection it asserts is the authorizer's doing.
 
 **Goal:** the safety boundary, hardened before there is real mail behind
 it.
 
-- [ ] `sqlglot` validator: one statement, `Select` / `With(Select)` root
-- [ ] Authorizer callback: allowlist by action code and table;
+- [x] `sqlglot` validator: one statement, `Select` / `With(Select)` root
+- [x] Authorizer callback: allowlist by action code and table;
       `audit_log` excluded
-- [ ] Read-only URI connection, extensions disabled
-- [ ] Row cap by query wrapping (not by trusting submitted `LIMIT`);
-      `set_progress_handler` timeout; response size cap
-- [ ] `search()` helper composing FTS5 MATCH with structured filters
+- [x] Read-only URI connection, extensions disabled
+- [x] Row cap via `fetchmany` (SQLite streams rows, so this caps results
+      without rewriting SQL we would otherwise have to transform correctly
+      for every query shape); `set_progress_handler` timeout; response
+      size cap
+- [x] `search()` helper composing FTS5 MATCH with structured filters
       (account, date, sender, mailbox, has_attachment, read state)
-- [ ] `typer` CLI: `tables`, `describe`, `query`, `search`, `status`
-- [ ] Python client, both transports, one shared execution path
+- [x] `typer` CLI: `tables`, `describe`, `query`, `search`, `status`
+- [x] Python client, both transports, one shared execution path
 
 **Exit criteria**
 
@@ -123,8 +142,9 @@ it.
 - Architecture test: both client transports resolve to the same
   execution function ([0009](decisions/0009-client-supports-two-transports.md))
 
-**Risk:** medium — and it is the risk worth front-loading. Budget real
-time for adversarial tests here.
+**Risk:** medium — and it was the right thing to front-load. Both
+surprises above were authorizer behaviour that would have been far more
+disruptive to discover with two live mailboxes already synced.
 
 ---
 
@@ -288,13 +308,17 @@ web UI, multi-user, cloud. Spec §2 holds.
 
 ## Open questions
 
-1. **Backfill depth.** Full mailbox history, or a bounded window (e.g.
+1. ~~**Gmail OAuth client registration.**~~ **Resolved:** the
+   `cdsci-infra` GCP project has a configured consent screen, and
+   secrets live in Secret Manager (ADR 0012). Two things still to
+   confirm before M3: whether the OAuth client is registered as a
+   *Desktop app* (any loopback port works) or a *Web application* (a
+   fixed redirect port must be registered), and whether the consent
+   screen is Published rather than in Testing mode — Testing mode expires
+   refresh tokens after 7 days.
+2. **Backfill depth.** Full mailbox history, or a bounded window (e.g.
    3 years) with on-demand backfill? Affects M3 duration and database
    size materially. *Decide before M3.*
-2. **Gmail OAuth client registration.** Needs a Google Cloud project
-   with the Gmail API enabled and an OAuth consent screen. In testing
-   mode a refresh token expires in 7 days — publishing the app (even
-   unverified, single-user) avoids weekly re-auth. *Blocks M3.*
 3. **Attachment storage location and retention.** Content-addressed under
    `~/.local/share/maildb/attachments/`? Any size cap?
 4. **Second Gmail account?** The config is multi-account from day one;
