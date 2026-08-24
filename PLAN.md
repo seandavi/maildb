@@ -205,18 +205,22 @@ by writing the tests rather than by reading the code:
 
 ---
 
-## M4 — MCP
+## M4 — MCP ✅
+
+**Status: complete.** Four tools, read-only profile, no write tool
+registered to be reached by accident.
 
 **Goal:** an agent can answer questions about the mailbox without
 learning a tool per operation.
 
-- [ ] FastMCP server exposing `list_tables`, `describe_table`,
-      `execute_query`
-- [ ] `describe_table` emits column semantics **and** provider capability
+- [x] MCP server exposing `list_tables`, `describe_table`,
+      `execute_query` (SDK is `mcp` 2.0, whose entry point is `MCPServer`,
+      not the older `FastMCP`)
+- [x] `describe_table` emits column semantics **and** provider capability
       caveats, so the model knows which columns are NULL for which account
-- [ ] `get_attachment` / `download_attachment`
-- [ ] stdio transport; bearer token when over HTTP
-- [ ] Read-only tool profile is the default; write tools not registered
+- [x] `get_attachment` / `download_attachment`
+- [x] stdio transport; bearer token when over HTTP
+- [x] Read-only tool profile is the default; write tools not registered
       unless explicitly enabled
 
 **Exit criteria**
@@ -232,6 +236,17 @@ That second criterion is the real test of whether
 `provider_capabilities` works.
 
 **Risk:** low-medium. Mostly a question of metadata quality.
+
+**Notes from the build.** `list_tables` returns the database-wide
+conventions alongside the table list, and the server ships instructions
+naming the specific traps — string-comparable timestamps, `deleted_at IS
+NULL`, bulk-mail exclusion, the `message_labels` join, the FTS join
+shape. All of it exists to prevent particular known wrong answers rather
+than to describe the schema in general.
+
+Query rejections come back as `{"error": ...}` data rather than as
+exceptions, so a model can read why it was refused and fix its own
+query instead of failing the turn.
 
 ---
 
