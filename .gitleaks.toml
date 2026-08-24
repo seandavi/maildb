@@ -1,0 +1,26 @@
+# Secret-scanning configuration.
+#
+# Two files in this repository legitimately contain credential *patterns*
+# rather than credentials:
+#
+#   src/maildb/config.py       the detector itself -- it exists to refuse
+#                              values that look like secrets, so it must
+#                              contain the shapes it matches.
+#   tests/unit/test_config.py  the tests for that detector. The fake
+#                              credentials there are assembled at runtime
+#                              from a prefix plus obvious filler, so this
+#                              allowlist should be belt-and-braces only.
+#
+# Nothing here suppresses scanning of the rest of the tree.
+
+title = "maildb"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Detector patterns and their tests -- shapes, never secrets"
+paths = [
+  '''src/maildb/config\.py''',
+  '''tests/unit/test_config\.py''',
+]

@@ -43,21 +43,58 @@ def test_loads_accounts_from_a_table_of_tables(tmp_path: Path) -> None:
     assert config.account("cu").provider == "apple_mail"
 
 
+#: Filler for the fake credentials below. Long enough to satisfy the
+#: minimum-length parts of the detector patterns, and unmistakable to a
+#: human reading a diff.
+_FILLER = "EXAMPLENOTAREALCREDENTIAL" * 2
+
+
 @pytest.mark.parametrize(
-    "value",
+    ("prefix", "label"),
     [
-        "1//0gArealLookingRefreshToken",
-        "ya29.a0AfH6SMAAAAAAAAAAAAAA",
-        "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
-        "-----BEGIN PRIVATE KEY-----",
-        "xoxb-1234567890-abcdef",
-        "AIzaSyA1234567890abcdefghijklmnopqrstuv",
+        ("1//", "google refresh token"),
+        ("ya29.", "google access token"),
+        ("ghp_", "github token"),
+        ("sk-", "openai-style key"),
+        ("xoxb-", "slack token"),
+        ("AIza", "google api key"),
     ],
 )
-def test_credential_shaped_values_are_refused(value: str) -> None:
-    """Config holds references. A pasted token fails at load, not at commit."""
+def test_credential_shaped_values_are_refused(prefix: str, label: str) -> None:
+    """Config holds references. A pasted token fails at load, not at commit.
+
+    The fakes are assembled at runtime rather than written as literals.
+    A credential-shaped literal in a public repository trips GitHub's
+    secret scanner and every other detector, producing an alert that
+    costs someone real time to disprove -- which is exactly what happened
+    the first time this test was written. Concatenation exercises the
+    same patterns while leaving nothing in the source to match.
+    """
+    with pytest.raises(SecretInConfigError, match="not a reference"):
+        assert_not_a_secret("accounts.x.credential_ref", prefix + _FILLER)
+
+
+def test_private_key_blocks_are_refused() -> None:
+    """A PEM header is the one pattern that cannot be built from parts."""
+    pem_header = "-" * 5 + "BEGIN PRIVATE KEY" + "-" * 5
     with pytest.raises(SecretInConfigError):
-        assert_not_a_secret("accounts.x.credential_ref", value)
+        assert_not_a_secret("accounts.x.credential_ref", pem_header)
+
+
+def test_no_credential_shaped_literals_in_this_file() -> None:
+    """Guard against the next person reintroducing the problem.
+
+    Fails if a literal matching a common credential prefix appears in the
+    test source, which is what generated a false-positive secret-scanning
+    alert on this repository.
+    """
+    import re
+
+    source = Path(__file__).read_text()
+    offenders = re.findall(
+        r'"(?:1//|ya29\.|ghp_|sk-|xox[baprs]-|AIza)[A-Za-z0-9._-]{8,}"', source
+    )
+    assert not offenders, f"credential-shaped literals in test source: {offenders}"
 
 
 def test_reference_shaped_values_are_accepted() -> None:
