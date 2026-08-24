@@ -10,12 +10,31 @@ notebooks, n8n, the CLI. MCP is one way to expose it.
 > Email accounts are data sources; SQLite is the local indexed
 > representation; SQL is the primary read interface.
 
-**Status: planning.** No implementation yet. The design is complete and
-under version control.
+**Status: M1–M4 built, M3 unverified against a live mailbox.**
+249 tests, ruff and mypy-strict clean.
+
+| | Milestone | State |
+|---|---|---|
+| M1 | Database, FTS, schema metadata | ✅ |
+| M2 | SQL safety layer, CLI, client | ✅ |
+| M3 | Gmail provider, sync engine | 🟡 code complete, needs a live account |
+| M4 | MCP server | ✅ |
+| M5 | Apple Mail provider | ⬜ |
+| M6 | Writes | ⬜ |
+| M7 | Daemon | ⬜ |
 
 - [SPEC.md](SPEC.md) — build specification (v0.2)
 - [PLAN.md](PLAN.md) — milestones, exit criteria, open questions
 - [decisions/](decisions/) — architecture decision records
+
+```bash
+uv sync --all-extras
+uv run maildb init
+uv run maildb tables
+uv run maildb describe messages
+uv run maildb query "SELECT subject, sender_email FROM messages LIMIT 5"
+uv run maildb search "R01 deadline"
+```
 
 ## Shape
 
