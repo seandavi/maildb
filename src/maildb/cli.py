@@ -258,6 +258,94 @@ def search(
 
 
 @app.command()
+def auth(
+    account: str,
+    config: ConfigOption = None,
+    scopes: Annotated[
+        str | None,
+        typer.Option(help="Comma-separated scopes. Defaults to read-only."),
+    ] = None,
+) -> None:
+    """Authorize an account, opening a browser for consent.
+
+    Run once per account per machine. The refresh token is written to the
+    Keychain; the OAuth client itself comes from Secret Manager.
+    """
+    from maildb.accounts import authorize
+
+    settings = _config(config)
+    try:
+        account_config = settings.account(account)
+    except MaildbError as exc:
+        _fail(str(exc))
+        return
+
+    scope_list = [s.strip() for s in scopes.split(",")] if scopes else None
+    typer.echo(f"authorizing {account_config.email} ({account_config.id})...")
+    typer.echo("a browser window will open for consent")
+    try:
+        authorize(settings, account_config, scopes=scope_list)
+    except Exception as exc:  # surfaced verbatim: the causes are all external
+        _fail(f"authorization failed: {exc}")
+        return
+    typer.secho(
+        "authorized; refresh token stored in the Keychain", fg=typer.colors.GREEN
+    )
+
+
+@app.command()
+def sync(
+    account: Annotated[
+        str | None, typer.Argument(help="Account id; omit for all.")
+    ] = None,
+    config: ConfigOption = None,
+) -> None:
+    """Synchronize one account, or every enabled account."""
+    from maildb.accounts import build_provider
+    from maildb.sync.engine import SyncEngine
+
+    settings = _config(config)
+    if not settings.database.path.exists():
+        _fail(f"no database at {settings.database.path}. Run 'maildb init' first.")
+        return
+
+    targets = (
+        [settings.account(account)]
+        if account
+        else [a for a in settings.accounts if a.enabled and a.sync_enabled]
+    )
+    if not targets:
+        _fail("no enabled accounts configured")
+        return
+
+    engine = SyncEngine(settings.database.path)
+    failures = 0
+    for target in targets:
+        typer.echo(f"syncing {target.id} ({target.email})...")
+        engine.ensure_account(
+            target.id,
+            target.provider.value,
+            target.email,
+            auth_method=target.auth_method.value,
+            credential_ref=target.credential_ref,
+        )
+        try:
+            provider = build_provider(settings, target)
+            stats = engine.sync_account(provider, target.id)
+        except Exception as exc:
+            failures += 1
+            typer.secho(f"  failed: {exc}", fg=typer.colors.RED, err=True)
+            continue
+        typer.secho(
+            f"  {stats.added} added, {stats.updated} updated, "
+            f"{stats.deleted} deleted, {stats.mailboxes} mailboxes",
+            fg=typer.colors.GREEN,
+        )
+    if failures:
+        raise typer.Exit(1)
+
+
+@app.command()
 def status(config: ConfigOption = None) -> None:
     """Show database and sync status."""
     settings = _config(config)
