@@ -1,0 +1,23 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --all-extras
+      - run: uv run ruff check src tests
+      - run: uv run ruff format --check src
+      - run: uv run mypy
+      # The security suite is the one that must never be skipped: it runs
+      # with the SQL parser disabled, so every rejection it asserts is the
+      # authorizer's doing (see decisions/0002).
+      - run: uv run pytest -q

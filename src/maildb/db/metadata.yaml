@@ -1,0 +1,254 @@
+# Semantic schema metadata.
+#
+# SQLite's own schema says a column is TEXT. It does not say that
+# `received_at` is fixed-width ISO-8601 UTC so string comparison is
+# chronological, or that `is_important` is always NULL for the Apple Mail
+# account. That difference is most of what separates good agent SQL from
+# plausible-looking wrong answers.
+#
+# `capability:` on a column names the provider capability that governs it.
+# describe_table turns that into an explicit caveat. Any column that is
+# not universally populated MUST carry one -- a test enforces it.
+
+conventions:
+  timestamps: >-
+    Every timestamp column is fixed-width ISO-8601 UTC
+    (YYYY-MM-DDTHH:MM:SSZ). Lexicographic comparison is therefore
+    chronological, so `received_at >= '2026-01-01'` is correct as
+    written. All values are UTC; converting to local time is the
+    caller's job.
+  soft_deletes: >-
+    Rows are never removed by sync. `messages.deleted_at` is set when a
+    message disappears at the provider. Almost every query should include
+    `WHERE deleted_at IS NULL`.
+  json_columns: >-
+    Columns holding JSON (recipients, cc, bcc, participants,
+    provider_metadata, oauth_scopes, mailbox_watermarks) are TEXT
+    containing a JSON array or object. Use SQLite's json_each /
+    json_extract to query inside them.
+  identifiers: >-
+    `id` columns are ULIDs and are the only identifiers safe to expose.
+    `provider_*_id` columns are provider-shaped, are unique only within
+    an account, and must never be used as a cross-account key.
+
+tables:
+
+  accounts:
+    description: One row per configured mail account.
+    columns:
+      id: Internal account identifier, and the value to filter on.
+      provider: "'gmail' or 'apple_mail'."
+      email: The account's email address.
+      display_name: Human-readable account name.
+      auth_method: "'oauth_installed', 'service_account', or 'none'."
+      oauth_scopes: JSON array of OAuth scopes actually granted.
+      credential_ref: >-
+        Name of the credential in Secret Manager or the Keychain. Never a
+        credential itself.
+      delegated_subject: Service-account impersonation target; Workspace only.
+      enabled: Whether the account is active at all.
+      sync_enabled: Whether the sync engine should poll this account.
+      created_at: When this row was created.
+      updated_at: When this row last changed.
+
+  provider_capabilities:
+    description: >-
+      What each provider can actually do. The schema is a superset built
+      to Gmail's fidelity; consult this table before concluding that an
+      empty result means "none" rather than "not supported here".
+    columns:
+      provider: The provider the row describes.
+      capability: Capability name, e.g. 'incremental_history'.
+      supported: 1 if supported, 0 if not.
+      notes: How it is supported, or what stands in for it.
+
+  mailboxes:
+    description: Gmail labels and IMAP folders, normalized.
+    columns:
+      id: Internal mailbox identifier.
+      account_id: Owning account.
+      provider_mailbox_id: Provider-side label or folder id.
+      name: Display name.
+      mailbox_type: >-
+        Normalized role: inbox, sent, drafts, trash, spam, archive,
+        starred, important, or user.
+      parent_id: Parent mailbox for nested folders.
+      label_type: {description: "'system' or 'user'.", capability: labels_many_to_many}
+      message_list_visibility: {description: Gmail label visibility in the message list., capability: labels_many_to_many}
+      label_list_visibility: {description: Gmail label visibility in the label list., capability: labels_many_to_many}
+      messages_total: {description: Provider-reported message count., capability: labels_many_to_many}
+      messages_unread: {description: Provider-reported unread count., capability: labels_many_to_many}
+      threads_total: {description: Provider-reported thread count., capability: labels_many_to_many}
+      threads_unread: {description: Provider-reported unread thread count., capability: labels_many_to_many}
+      color_background: {description: Gmail label background colour., capability: labels_many_to_many}
+      color_text: {description: Gmail label text colour., capability: labels_many_to_many}
+      provider_metadata: JSON blob of provider-specific fields.
+      updated_at: When this row last changed.
+
+  threads:
+    description: Conversation threads.
+    columns:
+      id: Internal thread identifier.
+      account_id: Owning account.
+      provider_thread_id: {description: Provider-side thread id., capability: native_thread_id}
+      provider_history_id: {description: Gmail history watermark for the thread., capability: incremental_history}
+      thread_source: >-
+        'provider' when the provider supplied the grouping,
+        'reconstructed' when it was inferred from RFC-822 headers.
+        Reconstructed threads are imperfect by construction.
+      subject: Subject of the first message.
+      first_message_at: Timestamp of the earliest message.
+      last_message_at: Timestamp of the most recent message.
+      message_count: Number of messages in the thread.
+      participants: JSON array of participating addresses.
+      snippet: Short preview of the thread.
+      updated_at: When this row last changed.
+
+  messages:
+    description: >-
+      Normalized email messages across all accounts. The main table.
+      Filter `deleted_at IS NULL` unless you specifically want deleted
+      mail.
+    columns:
+      seq: >-
+        Internal integer key backing the full-text index. Never expose or
+        rely on it; join on `id`.
+      id: Stable public message identifier (ULID).
+      account_id: Owning account. Join to accounts.id.
+      thread_id: Owning thread, or NULL if unthreaded.
+      provider_message_id: Provider-side message id; unique within an account only.
+      provider_thread_id: Provider-side thread id.
+      message_id_header: RFC-822 Message-ID header.
+      in_reply_to: RFC-822 In-Reply-To header.
+      references_header: RFC-822 References header, space-separated.
+      mailbox_id: >-
+        Canonical folder, for providers that put a message in exactly one
+        place. NULL for Gmail. Join through message_labels instead --
+        that is authoritative for both provider shapes.
+      subject: Subject line, MIME-decoded.
+      sender_name: Display name of the sender.
+      sender_email: Sender address, lowercased. Indexed.
+      recipients: JSON array of To addresses.
+      cc: JSON array of Cc addresses.
+      bcc: JSON array of Bcc addresses.
+      reply_to: JSON array of Reply-To addresses.
+      sent_at: >-
+        Timestamp from the Date header. Client-supplied, so it can be
+        wrong or forged; prefer internal_date or received_at for ordering.
+      received_at: Provider-reported receipt time. The general-purpose ordering column.
+      internal_date: {description: "Gmail's authoritative receipt timestamp. The most trustworthy ordering key where present.", capability: incremental_history}
+      body_text: Plain-text body, synthesized from HTML when necessary. Full-text indexed.
+      body_html: HTML body. NULL unless sync.retain_html is enabled; not indexed.
+      snippet: Short preview of the message.
+      has_attachments: 1 if the message has at least one attachment.
+      history_id: {description: Per-message Gmail history watermark., capability: incremental_history}
+      size_estimate: {description: Approximate message size in bytes., capability: size_estimate}
+      is_read: 1 if read, 0 if unread.
+      is_starred: 1 if starred or flagged.
+      is_draft: 1 if the message is a draft.
+      is_sent: 1 if sent by the account owner.
+      is_important: {description: "1 if the provider marked it important. Always NULL for apple_mail -- absence is not evidence of unimportance.", capability: importance_flag}
+      is_spam: {description: 1 if classified as spam., capability: spam_trash_state}
+      is_trash: {description: 1 if in the trash., capability: spam_trash_state}
+      is_answered: 1 if the message has been replied to.
+      list_id: >-
+        List-Id header. Non-NULL is a strong signal of bulk or
+        mailing-list mail; the cheapest way to separate newsletters from
+        human correspondence.
+      list_unsubscribe: List-Unsubscribe header.
+      precedence: "Precedence header: bulk, list, or junk."
+      auto_submitted: >-
+        Auto-Submitted header. Any value other than 'no' indicates
+        machine-generated mail.
+      provider_metadata: JSON blob of provider-specific fields.
+      created_at: When this row was first indexed locally.
+      updated_at: When this row last changed locally.
+      deleted_at: >-
+        Set when the message disappeared at the provider. NULL for live
+        mail. Rows are never hard-deleted by sync.
+
+  message_labels:
+    description: >-
+      Mailbox membership. Authoritative for every provider: Gmail
+      messages have many rows, single-folder providers have exactly one.
+      Join through this rather than messages.mailbox_id.
+    columns:
+      message_id: The message.
+      mailbox_id: A mailbox the message belongs to.
+
+  message_headers:
+    description: >-
+      Full RFC-822 headers, verbatim. Headers legitimately repeat
+      (Received, References), hence the ordinal.
+    columns:
+      message_id: The message.
+      ordinal: Position in the original header block; preserves order and duplicates.
+      name: Header name as received, original case.
+      name_lower: Lowercased header name. The column to filter on.
+      value: Header value, undecoded.
+
+  attachments:
+    description: >-
+      Attachment metadata. Rows exist as soon as a message is indexed,
+      but bytes are only fetched on explicit request -- check
+      `downloaded`.
+    columns:
+      id: Internal attachment identifier.
+      message_id: Owning message.
+      provider_attachment_id: {description: Provider-side attachment id., capability: attachment_by_id}
+      part_id: MIME part id within the message.
+      content_id: Content-ID header, for inline images.
+      is_inline: 1 if the part is displayed inline rather than attached.
+      filename: Attachment filename, MIME-decoded.
+      mime_type: Declared MIME type.
+      size_bytes: Size in bytes as reported by the provider.
+      content_hash: SHA-256 of the content; NULL until downloaded.
+      local_path: Path on disk; NULL until downloaded.
+      downloaded: 1 if the bytes have been retrieved.
+      provider_metadata: JSON blob of provider-specific fields.
+      created_at: When this row was created.
+
+  drafts:
+    description: Draft messages, tracked separately because they have their own provider identity.
+    columns:
+      id: Internal draft identifier.
+      account_id: Owning account.
+      provider_draft_id: {description: Provider-side draft id., capability: drafts}
+      message_id: The draft's content, as a row in messages.
+      in_reply_to_message_id: The message being replied to, if any.
+      thread_id: Thread the draft belongs to.
+      status: "'local', 'synced', 'sent', or 'discarded'."
+      created_at: When the draft was created.
+      updated_at: When the draft last changed.
+      sent_at: When the draft was sent, if it was.
+
+  sync_state:
+    description: Per-account synchronization bookkeeping.
+    columns:
+      account_id: The account.
+      provider_cursor: {description: "Provider-native incremental cursor (Gmail historyId).", capability: incremental_history}
+      mailbox_watermarks: >-
+        JSON object of per-mailbox high-water-marks. Used by providers
+        with no change feed, where this stands in for a cursor.
+      last_sync_started: When the most recent sync began.
+      last_sync_completed: When the most recent sync finished successfully.
+      last_reconciled_at: >-
+        When the last reconciliation sweep ran. For apple_mail this
+        bounds how stale deletion and flag state can be.
+      messages_seen: Messages examined in the last sync.
+      messages_added: Messages inserted in the last sync.
+      messages_updated: Messages updated in the last sync.
+      messages_deleted: Messages marked deleted in the last sync.
+      status: "'idle', 'running', 'ok', or 'failed'."
+      error: Error text from the last failure, if any.
+
+  message_fts:
+    description: >-
+      Full-text index over messages. Query with MATCH and join back on
+      `message_fts.rowid = messages.seq`. Supports AND, OR, NOT, phrase
+      queries, and prefix search with *.
+    columns:
+      subject: Indexed subject line.
+      sender_email: Indexed sender address.
+      recipients: Indexed recipient addresses.
+      body_text: Indexed plain-text body. HTML bodies are not indexed.
