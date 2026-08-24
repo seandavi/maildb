@@ -63,8 +63,24 @@ strict = true
 files = ["src/maildb"]
 
 [[tool.mypy.overrides]]
-module = ["yoyo.*", "html2text.*", "google.*", "google.cloud.*", "keyring.*"]
+module = [
+    "yoyo.*",
+    "html2text.*",
+    "google.*",
+    "google.cloud.*",
+    "google.oauth2.*",
+    "google_auth_oauthlib.*",
+    "googleapiclient.*",
+    "keyring.*",
+]
 ignore_missing_imports = true
+
+# The Google client libraries are largely untyped. Calling into them from
+# strict code is unavoidable, and the wrapper is thin by design (ADR
+# 0011); the exemption is scoped to the one module that touches them.
+[[tool.mypy.overrides]]
+module = ["maildb.providers.gmail"]
+disallow_untyped_calls = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
