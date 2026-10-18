@@ -1,5 +1,7 @@
 # maildb
 
+> **Superseded (2026-10-18):** mail now goes into [seandavi/lookout](https://github.com/seandavi/lookout) (`lookout mail-load`, MCP tools `mail_search`/`mail_read`), loaded from Apple Mail on the Mac. See lookout#11. This repository is archived.
+
 A local-first, multi-provider email **database** with a safe SQL
 interface.
 
